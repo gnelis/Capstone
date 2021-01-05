@@ -1,0 +1,132 @@
+---
+title: "Exploratory Analysis - Milestone Week 2"
+author: "Gonzalo Nelis S."
+date: "25-12-2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(stringi)
+library(quanteda)
+library(knitr)
+quanteda_options(threads = 8)
+```
+
+## Summary
+
+This report resumes the main findings of the exploratory data analysis for the Coursera Capstone project. The main goal of the capstone is building and testing a text prediction app based on  a large corpus of English texts.
+
+## Data Import
+
+First, we import the data, which is divided in three text files from different sources: Twitter, Blogs and News.
+
+```{r import, include=TRUE, cache=TRUE}
+readFiles<-function(file_name){
+    con <- file(file_name, open = "rb"); 
+    data <- readLines(con, encoding = "UTF-8", skipNul = TRUE); 
+    close(con)
+    data
+}
+
+blogs<-readFiles('Data/en_US.blogs.txt')
+twitter<-readFiles('Data/en_US.twitter.txt')
+news<-readFiles('Data/en_US.news.txt')
+```
+
+## Data Analysis
+
+Some basic statistics about each dataset are displayed next:
+
+```{r stats}
+blog_stats<-stri_stats_general(blogs)
+twitter_stats<-stri_stats_general(twitter)
+news_stats<-stri_stats_general(news)
+
+stats_table<-rbind(blog_stats,twitter_stats,news_stats)
+rownames(stats_table)<-c('Blogs','Twitter','News')
+colnames(stats_table)<-c('Texts','Non-empty Texts', 'Characters', 'Non-white Characters')
+kable(stats_table)
+
+```
+
+The largest text collection is from Blogs with `r stats_table['Blogs','Non-white Characters']` non-white characters, followed by News with `r stats_table['News','Non-white Characters']` and finally Twitter with `r stats_table['Twitter','Non-white Characters']`. In terms of individual texts, Twitter is the largest collection with `r stats_table['Twitter','Texts']`.
+
+We will merge these dataset into a unique corpus to simplify the analysis.
+
+```{r corpus, cache = TRUE}
+
+news_corpus<-corpus(news,docnames = sprintf("news[%s]",seq(1:length(news))))
+blogs_corpus<-corpus(blogs,docnames = sprintf("blogs[%s]",seq(1:length(blogs))))
+twitter_corpus<-corpus(twitter,docnames = sprintf("twitter[%s]",seq(1:length(twitter))))
+
+big_corpus<-news_corpus+blogs_corpus+twitter_corpus
+
+```
+## Word Frequency
+To further study this corpus, we will perform some analysis on the most frequent words in the dataset. We will focus exclusively on words, eliminating punctuation, symbols, numbers, urls and separators. 
+
+```{r tokens, cache = TRUE}
+
+tokens<-tokens(big_corpus,
+               what = "word",
+               remove_punct = TRUE,
+               remove_symbols = TRUE,
+               remove_numbers = TRUE,
+               remove_url = TRUE,
+               remove_separators = TRUE)
+
+```
+
+Any analysis about word frequency will be mostly populated by stopwords ('in', 'the', 'at', etc.). First,  we remove those words from the analysis and evaluate the frequency on the rest of the dataset. We plot the top 15 words by frequency found in the corpus.
+
+```{r freq, cache = TRUE}
+df <- dfm(tokens, remove=stopwords("english"))
+
+topfeat<-data.frame('Frequency'=topfeatures(df, n = 15), "Word" = names(topfeatures(df, n = 15)))
+
+ggplot(aes(x=reorder(Word,Frequency),y = Frequency), data = topfeat) +
+    geom_bar(stat='identity',color='skyblue',fill='steelblue') +
+    coord_flip() +
+    labs(x = NULL, y = "Frequency", "Top 15 tokens")
+```
+
+As seen in the figure, most are common words in the English language. 'Said' is the most frequent word due to its common use in news articles.
+
+More information can be gathered looking at the cloud of the top 100 most frequent words.
+
+```{r cloud}
+textplot_wordcloud(df, max_words = 100)
+```
+
+Again, there are no surprises on the most used words, except for 'lol' which is an acronym for 'laughing out loud' or an abbreviation of the popular game 'League of legends'. 
+
+## 2-grams
+
+Finally, we perform a brief analysis of the combination of two adjacent words, denoted as 2-grams. First, we obtain all the 2-grams from our corpus and we build a document-feature matrix to study their frequency. 
+
+```{r 2grams, cache= TRUE}
+df_two <- dfm(tokens_ngrams(tokens, n = 2))
+```
+
+There is a total of `r nfeat(df_two)`2-grams in the corpus. To obtain the most used 2-grams, we perform the same analysis as before. Note that we did not remove stopwords from the tokens, since the most used combinations for text prediction include those words.
+
+```{r 2gramsfreq, cache= TRUE}
+topfeat_two<-data.frame('Frequency'=topfeatures(df_two, n = 15), "Word" = names(topfeatures(df_two, n = 15)))
+ggplot(aes(x=reorder(Word,Frequency),y = Frequency), data = topfeat_two) +
+    geom_bar(stat='identity',color='skyblue',fill='steelblue') +
+    coord_flip() +
+    labs(x = NULL, y = "Frequency", main = "Top 15 2-grams")
+```
+
+Unsurprisingly, the 2-grams are clearly dominated by combination of stopwords, since they are the most used words in the English language.
+
+## Model outline
+
+For the prediction model, a simply back-off model based on ngrams will be used. In sequence, for a given set of words, we perform the following steps:
+
+- We extract the last n words of the sentence.
+- We list all the (n+1)-grams from the corpora where the first n words match our text, and predict the next words based on the (n+1)-gram frequency.
+- If we are not able to find any matching (n+1)-grams in our corpus, we repeat the analysis extracting the last (n-1) words instead.
+- Repeat until we find a valid n-gram, or until we get to n=1. In that case, we predict based on the most frequent word of the corpus.
